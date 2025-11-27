@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 header('Content-Type: application/json');
 
-require __DIR__ . '/googleClient.php';
+require __DIR__ . '/calcomClient.php';
 
 $payload = json_decode(file_get_contents('php://input') ?: '[]', true) ?? [];
 
@@ -14,6 +14,7 @@ $attendeeName = trim($payload['attendeeName'] ?? 'Guest');
 $attendeeEmail = trim($payload['attendeeEmail'] ?? '');
 $attendeePhone = trim($payload['attendeePhone'] ?? '');
 $notes = trim($payload['notes'] ?? '');
+$timezone = $payload['timezone'] ?? getDefaultTimezone();
 
 if (!$startTime || !$endTime || !$attendeeEmail) {
     http_response_code(400);
@@ -25,49 +26,68 @@ if (!$startTime || !$endTime || !$attendeeEmail) {
 }
 
 try {
-    $client = getGoogleClient();
-    $calendar = new Google_Service_Calendar($client);
+    $eventTypeId = getEventTypeId();
+    
+    if (!$eventTypeId) {
+        throw new RuntimeException('Could not find Cal.com event type. Please check your CALCOM_EVENT_SLUG in config.php.');
+    }
 
-    $event = new Google_Service_Calendar_Event([
-        'summary' => sprintf('Meeting with %s', $attendeeName),
-        'description' => buildDescription($notes, $attendeePhone),
-        'start' => ['dateTime' => $startTime],
-        'end' => ['dateTime' => $endTime],
-        'attendees' => [
-            ['email' => $attendeeEmail],
+    $client = getCalcomClient();
+
+    // Build booking payload for Cal.com
+    $bookingData = [
+        'eventTypeId' => $eventTypeId,
+        'start' => $startTime,
+        'end' => $endTime,
+        'timeZone' => $timezone,
+        'responses' => [
+            'name' => $attendeeName,
+            'email' => $attendeeEmail,
         ],
+    ];
+
+    // Add optional fields if provided
+    if (!empty($attendeePhone)) {
+        $bookingData['responses']['phone'] = $attendeePhone;
+    }
+
+    if (!empty($notes)) {
+        $bookingData['responses']['notes'] = $notes;
+    }
+
+    // Cal.com booking endpoint
+    $response = $client->post('/bookings', [
+        'json' => $bookingData,
     ]);
 
-    $created = $calendar->events->insert(
-        GOOGLE_CALENDAR_ID,
-        $event,
-        ['sendUpdates' => 'all']
-    );
+    $booking = json_decode($response->getBody()->getContents(), true);
+
+    // Cal.com returns booking with uid or id
+    $bookingId = $booking['uid'] ?? $booking['id'] ?? 'unknown';
 
     echo json_encode([
         'success' => true,
-        'eventId' => $created->getId(),
+        'eventId' => $bookingId,
+        'booking' => $booking,
     ]);
 } catch (Throwable $exception) {
     http_response_code(500);
+    
+    // Try to extract more detailed error from Cal.com response
+    $errorMessage = $exception->getMessage();
+    
+    if ($exception instanceof \GuzzleHttp\Exception\ClientException) {
+        $response = $exception->getResponse();
+        if ($response) {
+            $errorBody = json_decode($response->getBody()->getContents(), true);
+            if (isset($errorBody['message'])) {
+                $errorMessage = $errorBody['message'];
+            }
+        }
+    }
+    
     echo json_encode([
         'success' => false,
-        'error' => $exception->getMessage(),
+        'error' => $errorMessage,
     ]);
 }
-
-function buildDescription(string $notes, string $phone): string
-{
-    $lines = [];
-
-    if (!empty($notes)) {
-        $lines[] = "Notes: {$notes}";
-    }
-
-    if (!empty($phone)) {
-        $lines[] = "Phone: {$phone}";
-    }
-
-    return implode("\n", $lines);
-}
-
