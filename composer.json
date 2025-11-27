@@ -1,0 +1,14 @@
+{
+  "name": "experimental-outbound-intelligence/calendar-backend",
+  "description": "PHP backend for booking calendar (Google Calendar API)",
+  "type": "project",
+  "require": {
+    "google/apiclient": "^2.15"
+  },
+  "autoload": {
+    "psr-4": {
+      "CalendarBackend\\": "src/"
+    }
+  }
+}
+
